@@ -1,2 +1,0 @@
-[2026-09-28 14:08:15] ocisti_temp_v2.bat -> USPESNO
-[2026-09-28 14:08:41] pokreni_programe.bat -> USPESNO
