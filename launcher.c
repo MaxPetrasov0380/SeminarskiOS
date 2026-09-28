@@ -7,7 +7,8 @@
  *   - prikazuje dinamicki meni na osnovu te liste,
  *   - pokrece izabrani bat fajl i upisuje rezultat izvrsenja
  *     (vreme + naziv + uspeh/neuspeh) u log fajl,
- *   - omogucava citanje vec napisanog log fajla.
+ *   - omogucava citanje vec napisanog log fajla
+ *     (citanje i pisanje log fajla ide preko spregnute liste).
  *
  * Kompajliranje (MinGW / gcc na Windows-u):
  *   gcc launcher.c -o launcher.exe
@@ -28,6 +29,7 @@
 #define LOG_FAJL       "log.txt"
 #define MAX_NAZIV      256
 #define MAX_PUTANJA    512
+#define MAX_LOG_LINIJA 512
 
 /* ---------- Jednostruko spregnuta lista bat fajlova ---------- */
 
@@ -100,48 +102,119 @@ void ucitajBatFajlove(const char *folder) {
     FindClose(hFind);
 }
 
-/* ---------- Rad sa log fajlom (pisanje i citanje) ---------- */
+/* ---------- Rad sa log fajlom (preko jednostruko spregnute liste) ---------- */
 
-/* Upisuje jedan red u log fajl: [vreme] naziv -> USPESNO/NEUSPESNO */
-void upisiLog(const char *nazivBatFajla, int uspeh) {
-    FILE *fp = fopen(LOG_FAJL, "a");
+typedef struct LogCvor {
+    char linija[MAX_LOG_LINIJA];   /* jedan red iz log fajla */
+    struct LogCvor *sledeci;
+} LogCvor;
+
+LogCvor *logGlava = NULL;
+
+/* Dodaje novi red na kraj log liste. */
+void dodajLogCvor(const char *linija) {
+    LogCvor *novi = (LogCvor *) malloc(sizeof(LogCvor));
+    if (!novi) {
+        printf("[GRESKA] Neuspesna alokacija memorije.\n");
+        exit(1);
+    }
+
+    strncpy(novi->linija, linija, MAX_LOG_LINIJA - 1);
+    novi->linija[MAX_LOG_LINIJA - 1] = '\0';
+    novi->sledeci = NULL;
+
+    if (logGlava == NULL) {
+        logGlava = novi;
+    } else {
+        LogCvor *tek = logGlava;
+        while (tek->sledeci != NULL) {
+            tek = tek->sledeci;
+        }
+        tek->sledeci = novi;
+    }
+}
+
+/* Oslobadja celu log listu iz memorije. */
+void oslobodiLogListu(void) {
+    LogCvor *tek = logGlava;
+    while (tek != NULL) {
+        LogCvor *sledeci = tek->sledeci;
+        free(tek);
+        tek = sledeci;
+    }
+    logGlava = NULL;
+}
+
+/* Cita log fajl i njegov sadrzaj prebacuje u listu.
+ * Vraca 1 ako je fajl otvoren, 0 ako ne postoji. */
+int ucitajLog(void) {
+    oslobodiLogListu();
+
+    FILE *fp = fopen(LOG_FAJL, "r");
+    if (!fp) {
+        return 0;
+    }
+
+    char linija[MAX_LOG_LINIJA];
+    while (fgets(linija, sizeof(linija), fp)) {
+        linija[strcspn(linija, "\n")] = '\0';
+        dodajLogCvor(linija);
+    }
+
+    fclose(fp);
+    return 1;
+}
+
+/* Upisuje log fajl prolazeci kroz listu cvor po cvor. */
+void upisiListuUFajl(void) {
+    FILE *fp = fopen(LOG_FAJL, "w");
     if (!fp) {
         printf("[GRESKA] Ne mogu da otvorim log fajl za pisanje.\n");
         return;
     }
 
+    LogCvor *tek = logGlava;
+    while (tek != NULL) {
+        fprintf(fp, "%s\n", tek->linija);
+        tek = tek->sledeci;
+    }
+
+    fclose(fp);
+}
+
+/* Dodaje novi red: [vreme] naziv -> USPESNO/NEUSPESNO u listu,
+ * a zatim upisuje celu listu u log fajl. */
+void upisiLog(const char *nazivBatFajla, int uspeh) {
     time_t sada = time(NULL);
     struct tm *vreme = localtime(&sada);
     char vremenskaOznaka[32];
     strftime(vremenskaOznaka, sizeof(vremenskaOznaka), "%Y-%m-%d %H:%M:%S", vreme);
 
-    fprintf(fp, "[%s] %s -> %s\n", vremenskaOznaka, nazivBatFajla,
-            uspeh ? "USPESNO" : "NEUSPESNO");
+    char linija[MAX_LOG_LINIJA];
+    snprintf(linija, sizeof(linija), "[%s] %s -> %s", vremenskaOznaka,
+             nazivBatFajla, uspeh ? "USPESNO" : "NEUSPESNO");
 
-    fclose(fp);
+    dodajLogCvor(linija);
+    upisiListuUFajl();
 }
 
-/* Ispisuje ceo sadrzaj log fajla na ekranu. */
+/* Ucitava log fajl u listu i ispisuje listu na ekranu. */
 void procitajLog(void) {
     system("cls");
     printf("========================================\n");
     printf("              SADRZAJ LOG FAJLA          \n");
     printf("========================================\n\n");
 
-    FILE *fp = fopen(LOG_FAJL, "r");
-    if (!fp) {
+    if (!ucitajLog()) {
         printf("Log fajl jos ne postoji (nijedan bat fajl jos nije pokrenut).\n");
+    } else if (logGlava == NULL) {
+        printf("Log fajl je prazan.\n");
     } else {
-        char linija[512];
-        int ima = 0;
-        while (fgets(linija, sizeof(linija), fp)) {
-            printf("%s", linija);
-            ima = 1;
+        LogCvor *tek = logGlava;
+        while (tek != NULL) {
+            printf("%s\n", tek->linija);
+            tek = tek->sledeci;
         }
-        if (!ima) {
-            printf("Log fajl je prazan.\n");
-        }
-        fclose(fp);
     }
 
     printf("\nPritisni bilo koji taster za povratak u meni...");
@@ -198,6 +271,7 @@ int main(void) {
     int izlaz = 0;
 
     ucitajBatFajlove(FOLDER_BATCH);
+    ucitajLog();
 
     while (!izlaz) {
         ispisiMeni();
@@ -254,6 +328,7 @@ int main(void) {
     }
 
     osloboditiListu();
+    oslobodiLogListu();
     printf("\nIzlazak iz programa...\n");
     return 0;
 }
